@@ -1,183 +1,121 @@
 import streamlit as st
 from streamlit_gsheets import GSheetsConnection
-import requests
 import pandas as pd
-import urllib.parse
-import re
 
-# --- 1. THE ENGINE (Google Sheets Version) ---
+# --- 1. APP CONFIG & STYLING ---
+st.set_page_config(page_title="Thesis Thanks", page_icon="🎓", layout="centered")
 
-# Connect to Google Sheets
-conn = st.connection("gsheets", type=GSheetsConnection)
-
-def get_all_thanks():
-    # Read existing data from the sheet
-    return conn.read(ttl="10s") # ttl=10s ensures we see new entries quickly
-
-def save_to_sheets(author, title, content, ref_url, tags):
-    # 1. Fetch existing data
-    existing_data = conn.read()
-    
-    # 2. Create the new row
-    new_entry = pd.DataFrame([{
-        "author": author,
-        "title": title,
-        "content": content,
-        "reference_url": ref_url,
-        "tags": tags
-    }])
-    
-    # 3. Combine and Update
-    updated_df = pd.concat([existing_data, new_entry], ignore_index=True)
-    conn.update(data=updated_df)
-
-# --- 2. METADATA & PARSING (Remains the same) ---
-
-def get_doi_metadata(doi):
-    doi = doi.replace("https://doi.org/", "").strip()
-    try:
-        resp = requests.get(f"https://api.crossref.org/works/{doi}", timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()['message']
-            title = data.get('title', [""])[0]
-            authors = ", ".join([f"{a.get('given')} {a.get('family')}" for a in data.get('author', [])])
-            return title, authors
-    except: return None, None
-
-def parse_citation_string(citation):
-    author, title = "", ""
-    parts = re.split(r'\(\d{4}\)', citation)
-    if len(parts) >= 2:
-        author = parts[0].strip().strip('.')
-        title_part = parts[1].split('.')
-        title = title_part[1].strip() if len(title_part) > 1 else title_part[0].strip()
-    else:
-        parts = citation.split('.', 2)
-        if len(parts) >= 2:
-            author, title = parts[0].strip(), parts[1].strip()
-    return title, author
-
-# --- 3. SETUP & STYLING ---
-
-st.set_page_config(page_title="Thesis Thanks", page_icon="🎓")
-
+# Custom CSS for a clean academic look
 st.markdown("""
     <style>
-    div[data-baseweb="radio"] div div:nth-child(2) { background-color: #007bff !important; }
-    .stRadio > label { font-weight: bold; color: #2c3e50; }
-    .tag-label {
-        background-color: #e9ecef; color: #495057; padding: 2px 8px;
-        border-radius: 12px; font-size: 0.8rem; margin-right: 5px;
-        display: inline-block; border: 1px solid #dee2e6;
+    .stApp { background-color: #f8f9fa; }
+    .tribute-card { 
+        padding: 2rem; 
+        border-radius: 10px; 
+        border-left: 5px solid #0e1117;
+        background-color: white;
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🎓 Thesis Thanks")
+# --- 2. DATABASE CONNECTION ---
+# This uses the Service Account defined in your Streamlit Secrets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-# Intro Text
-st.markdown("""
-    <div style="background-color: #f8f9fa; padding: 1.5rem; border-radius: 10px; border-left: 5px solid #007bff; margin-bottom: 2rem;">
-        <p style="font-style: italic; color: #34495e; font-size: 1.1rem; line-height: 1.6;">
-            "You’ve done the hard work. You’ve finished the research, survived the write-up, and dedicated a page (or two) to the people who carried you through. 
-            But unless they’re planning to hunt down your library deposit, they’ll likely never see it."
-        </p>
-        <p style="margin-top: 15px; font-size: 1.05rem;">
-            <strong>Thesis Thanks changes that.</strong> Simply paste your acknowledgments below to create a shareable tribute.
-        </p>
-    </div>
-""", unsafe_allow_html=True)
+def get_data():
+    try:
+        return conn.read(ttl="10s")
+    except Exception:
+        # Returns empty structure if sheet is brand new/empty
+        return pd.DataFrame(columns=["author", "title", "content", "reference_url"])
 
-menu = st.sidebar.selectbox("Menu", ["Create New", "View Gallery"])
-tag_options = ["Family", "Supervisor", "Colleagues", "Friends", "Participants", "Funding Body", "Emotional Support", "Technical Help"]
+# --- 3. ROUTER LOGIC (Unique Link Viewer) ---
+query_params = st.query_params
+BASE_URL = "https://thesis-thanks.streamlit.app/"
 
-if menu == "Create New":
-    st.header("1. Identify the Thesis")
-    mode = st.radio("Choose how to identify your work:", ["DOI Shortcut", "Paste Full Citation", "Enter Manually / Link"], horizontal=True)
-
-    final_author, final_title, final_ref = "", "", ""
-
-    if mode == "DOI Shortcut":
-        doi_in = st.text_input("Enter DOI")
-        if st.button("Fetch from DOI"):
-            t, a = get_doi_metadata(doi_in)
-            if t: st.session_state['t_title'], st.session_state['t_author'] = t, a
-        final_author = st.text_input("Author Name", value=st.session_state.get('t_author', ""))
-        final_title = st.text_input("Thesis Title", value=st.session_state.get('t_title', ""))
-        final_ref = f"https://doi.org/{doi_in}" if doi_in else ""
-
-    elif mode == "Paste Full Citation":
-        cit_in = st.text_area("Paste Citation")
-        if st.button("Parse Citation"):
-            t, a = parse_citation_string(cit_in)
-            if t: st.session_state['t_title'], st.session_state['t_author'] = t, a
-        final_author = st.text_input("Author Name", value=st.session_state.get('t_author', ""))
-        final_title = st.text_input("Thesis Title", value=st.session_state.get('t_title', ""))
-        final_ref = st.text_input("Link (Optional)")
-
-    elif mode == "Enter Manually / Link":
-        final_author = st.text_input("Author Name")
-        final_title = st.text_input("Thesis Title")
-        final_ref = st.text_input("Thesis Link")
-
-    st.markdown("---")
-    st.header("2. Write your Acknowledgments")
-    thanks_text = st.text_area("Your Acknowledgments", height=300)
-    selected_tags = st.multiselect("Who are you thanking?", tag_options)
-    tags_string = ", ".join(selected_tags)
-
-    if st.button("💾 Save to Cloud"):
-        if final_author and thanks_text:
-            with st.spinner("Writing to Google Sheets..."):
-                save_to_sheets(final_author, final_title, thanks_text, final_ref, tags_string)
-            st.success("Tribute saved to the cloud!")
-            st.balloons()
-        else:
-            st.error("Author and Acknowledgments are required.")
-
-else:
-    st.header("📜 Saved Acknowledgments")
-    df = get_all_thanks()
+if "id" in query_params:
+    entry_id = query_params["id"]
+    df = get_data()
     
-    if df.empty:
-        st.info("The gallery is empty.")
-    else:
-        col_search, col_filter = st.columns([2, 1])
-        with col_search:
-            search_query = st.text_input("🔍 Search", placeholder="Search...")
-        with col_filter:
-            filter_tag = st.selectbox("Category", ["All"] + tag_options)
-
-        # Convert DF to list of dicts for easy looping
-        rows = df.to_dict('records')
+    try:
+        # Pull specific row based on index
+        tribute = df.iloc[int(entry_id)]
         
-        for item in rows:
-            # Handle potential NaN values from Sheets
-            author = str(item.get('author', ''))
-            title = str(item.get('title', ''))
-            content = str(item.get('content', ''))
-            tags = str(item.get('tags', ''))
-            ref = str(item.get('reference_url', ''))
+        st.markdown(f"### 🎓 A Tribute by **{tribute['author']}**")
+        st.divider()
+        
+        # Display the Tribute
+        st.markdown(f"## {tribute['title']}")
+        st.info(tribute['content'])
+        
+        if tribute['reference_url']:
+            st.link_button("📄 View Original Thesis", tribute['reference_url'])
+        
+        st.divider()
+        if st.button("⬅️ Create Your Own Tribute"):
+            st.query_params.clear()
+            st.rerun()
+        
+        st.stop() # Prevents the rest of the app from loading
+        
+    except (IndexError, ValueError):
+        st.error("Tribute not found. It may have been moved or deleted.")
+        if st.button("Back to Home"):
+            st.query_params.clear()
+            st.rerun()
 
-            searchable = f"{author} {title} {content}".lower()
-            if (search_query.lower() in searchable) and (filter_tag == "All" or filter_tag in tags):
-                with st.expander(f"📄 {title} — {author}"):
-                    if tags:
-                        tag_html = "".join([f'<span class="tag-label">{t.strip()}</span>' for t in tags.split(",")])
-                        st.markdown(tag_html, unsafe_allow_html=True)
-                    st.write(content)
-                    if ref: st.markdown(f"🔗 **Ref:** [{ref}]({ref})")
-                    st.divider()
-                    
-                    # Sharing Section
-                    emails = st.text_input("Recipient Emails", key=f"em_{author[:5]}")
-                    perma_link = "https://thesisthanks.com" # Placeholder for your future domain
-                    
-                    subject = urllib.parse.quote(f"Acknowledgments from {author}")
-                    body = urllib.parse.quote(f"Check this out:\n\n{content}")
-                    
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.markdown(f'<a href="mailto:{emails}?subject={subject}&body={body}"><button style="width:100%; cursor:pointer; background:#007bff; color:white; border:none; padding:10px; border-radius:5px;">📧 Open Email</button></a>', unsafe_allow_html=True)
-                    with c2:
-                        st.code(perma_link, language=None)
+# --- 4. MAIN APP (Writer & Gallery Mode) ---
+st.title("🎓 Thesis Thanks")
+st.write("Turn your thesis acknowledgments into a permanent, shareable tribute.")
+
+tabs = st.tabs(["✍️ Write a Tribute", "🖼️ The Gallery"])
+
+# TAB 1: SUBMISSION FORM
+with tabs[0]:
+    with st.form("tribute_form", clear_on_submit=True):
+        st.subheader("Your Thesis Details")
+        author = st.text_input("Your Name", placeholder="e.g., John Nash")
+        thesis_title = st.text_input("Thesis Title", placeholder="e.g., Non-Cooperative Games")
+        
+        st.subheader("The Acknowledgments")
+        content = st.text_area("Copy your 'Thanks' section here...", height=200)
+        
+        ref_url = st.text_input("Link to Thesis (URL or DOI)", placeholder="https://...")
+        
+        submitted = st.form_submit_button("💾 Save to Cloud & Generate Link")
+        
+        if submitted:
+            if author and content and thesis_title:
+                df = get_data()
+                next_id = len(df)
+                
+                new_entry = pd.DataFrame([{
+                    "author": str(author),
+                    "title": str(thesis_title),
+                    "content": str(content),
+                    "reference_url": str(ref_url)
+                }])
+                
+                updated_df = pd.concat([df, new_entry], ignore_index=True)
+                conn.update(data=updated_df)
+                
+                # Show the Unique Link
+                unique_url = f"{BASE_URL}?id={next_id}"
+                st.success("Tribute Saved!")
+                st.markdown("#### 🔗 Share this specific tribute:")
+                st.code(unique_url)
+                st.balloons()
+            else:
+                st.error("Please fill in your Name, Title, and the Thanks content.")
+
+# TAB 2: THE GALLERY
+with tabs[1]:
+    df = get_data()
+    if df.empty:
+        st.write("The gallery is empty. Be the first to add a tribute!")
+    else:
+        for index, row in df.iterrows():
+            with st.expander(f"🎓 {row['author']} — {row['title'][:50]}..."):
+                st.write(row['content'])
+                st.markdown(f"[View Individual Page]({BASE_URL}?id={index})")
