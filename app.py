@@ -4,126 +4,131 @@ import pandas as pd
 import requests
 import re
 
-# --- 1. CONFIG & THEME ---
+# --- 1. APP CONFIG ---
 st.set_page_config(page_title="Thesis Thanks", page_icon="🎓", layout="centered")
 BASE_URL = "https://thesis-thanks.streamlit.app/"
 
+# Academic Theme CSS
 st.markdown("""
     <style>
     .stApp { background-color: #FFFFFF !important; }
     h1, h2, h3, p, span, div { color: #1A1A1A !important; }
-    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
-    .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; }
+    .intro-text { 
+        font-size: 1.15rem; 
+        color: #333333 !important; 
+        line-height: 1.7; 
+        background-color: #f9f9f9;
+        padding: 20px;
+        border-radius: 8px;
+        border-left: 4px solid #0e1117;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. LOGIC FUNCTIONS ---
+# --- 2. HELPERS & DATABASE ---
 conn = st.connection("gsheets", type=GSheetsConnection)
-
-def get_doi_metadata(doi):
-    try:
-        url = f"https://api.crossref.org/works/{doi}"
-        response = requests.get(url, timeout=5)
-        if response.status_code == 200:
-            data = response.json()['message']
-            title = data.get('title', [''])[0]
-            author_list = data.get('author', [])
-            author_name = f"{author_list[0].get('given', '')} {author_list[0].get('family', '')}" if author_list else "Unknown"
-            return author_name, title
-    except: return None, None
-    return None, None
-
-def parse_citation(citation):
-    """Simple parser to extract Author and Title from a standard citation string"""
-    # Attempt to find Author (usually before the first period or year)
-    author_match = re.search(r'^([^,(]+)', citation)
-    # Attempt to find Title (usually inside quotes or between dates and journal)
-    title_match = re.search(r'[“"‘\'](.+?)[”"’\']|(?<=\d\)\.\s)(.+?)(?=\.)', citation)
-    
-    author = author_match.group(0).strip() if author_match else "Unknown Author"
-    title = title_match.group(0).strip(" .\"'“”‘’") if title_match else "Unknown Title"
-    return author, title
 
 def get_data():
     try: return conn.read(ttl="0")
     except: return pd.DataFrame(columns=["author", "title", "content", "reference_url"])
 
-# --- 3. ROUTER (Unique Link View) ---
+def get_doi_metadata(doi):
+    try:
+        response = requests.get(f"https://api.crossref.org/works/{doi}", timeout=5)
+        if response.status_code == 200:
+            data = response.json()['message']
+            title = data.get('title', [''])[0]
+            authors = data.get('author', [])
+            name = f"{authors[0].get('given', '')} {authors[0].get('family', '')}" if authors else "Unknown"
+            return name, title
+    except: return None, None
+    return None, None
+
+def parse_citation(citation):
+    author = re.search(r'^([^,(]+)', citation)
+    title = re.search(r'[“"‘\'](.+?)[”"’\']|(?<=\d\)\.\s)(.+?)(?=\.)', citation)
+    return (author.group(0).strip() if author else "Unknown"), (title.group(0).strip(" .\"'") if title else "Unknown")
+
+# --- 3. ROUTER (The Shareable Tribute Link) ---
 query_params = st.query_params
 if "id" in query_params:
     entry_id = query_params["id"]
     df = get_data()
     try:
         tribute = df.iloc[int(entry_id)]
-        st.markdown(f"### 🎓 A Tribute by **{tribute['author']}**")
+        st.markdown("### 🎓 A Thesis Tribute")
         st.divider()
-        st.title(tribute['title'])
+        st.title(f"A Message from {tribute['author']}")
+        st.subheader(f"Ref: {tribute['title']}")
         st.info(tribute['content'])
         if tribute['reference_url'] and str(tribute['reference_url']) != "nan":
-            st.link_button("📄 View Thesis", tribute['reference_url'])
-        if st.button("⬅️ Back Home"):
+            st.link_button("📄 View Original Thesis", tribute['reference_url'])
+        st.divider()
+        if st.button("⬅️ Create Your Own"):
             st.query_params.clear()
             st.rerun()
         st.stop()
-    except: st.error("Entry not found."); st.stop()
+    except:
+        st.error("Tribute not found.")
+        st.stop()
 
-# --- 4. MAIN APP ---
+# --- 4. LANDING PAGE ---
 st.title("🎓 Thesis Thanks")
-tabs = st.tabs(["✍️ Submit Your Thanks", "🖼️ Gallery"])
+
+# THE UPDATED INTRO TEXT
+st.markdown("""
+<div class="intro-text">
+You’ve done the hard work. You’ve finished the research, survived the write-up, and dedicated a page (or two) to the people who carried you through. But unless they’re planning to hunt down your library deposit, they’ll likely never see it.
+<br><br>
+<b>Thesis Thanks</b> changes that. Simply paste your acknowledgments below to create a shareable tribute. Let them know that without them, this work wouldn't have seen the light of day.
+</div>
+""", unsafe_allow_html=True)
+
+st.divider()
+
+tabs = st.tabs(["✍️ Create Tribute", "🖼️ Gallery"])
 
 with tabs[0]:
-    # THE RADIO BUTTONS
-    mode = st.radio("Choose Input Method", ["Manual", "DOI", "Paste Citation"], horizontal=True)
+    mode = st.radio("Input Method", ["Manual", "DOI Lookup", "Citation Parser"], horizontal=True)
     
-    with st.form("entry_form", clear_on_submit=True):
-        author_val, title_val = "", ""
+    # Using columns for better form layout
+    with st.form("tribute_form"):
+        a_pre, t_pre = "", ""
         
-        if mode == "DOI":
-            doi_in = st.text_input("Enter DOI")
+        if mode == "DOI Lookup":
+            doi_in = st.text_input("DOI")
             if st.form_submit_button("🔍 Fetch"):
-                a, t = get_doi_metadata(doi_in)
-                if a: 
-                    st.session_state.a, st.session_state.t = a, t
-                    st.success(f"Found: {a}")
-                else: st.error("DOI not found")
-            author_val = st.session_state.get('a', "")
-            title_val = st.session_state.get('t', "")
-
-        elif mode == "Paste Citation":
-            cite_in = st.text_area("Paste APA/MLA/Chicago Citation")
+                a_pre, t_pre = get_doi_metadata(doi_in)
+        
+        elif mode == "Citation Parser":
+            cite_in = st.text_area("Paste Citation")
             if st.form_submit_button("🛠️ Parse"):
-                a, t = parse_citation(cite_in)
-                st.session_state.a, st.session_state.t = a, t
-                st.success(f"Extracted: {a}")
-            author_val = st.session_state.get('a', "")
-            title_val = st.session_state.get('t', "")
+                a_pre, t_pre = parse_citation(cite_in)
 
-        else: # Manual
-            author_val = st.text_input("Author Name")
-            title_val = st.text_input("Thesis Title")
-
-        # Core fields
-        final_author = st.text_input("Final Author Name", value=author_val)
-        final_title = st.text_input("Final Thesis Title", value=title_val)
-        thanks_text = st.text_area("Acknowledgments Content", height=200)
-        thesis_url = st.text_input("Thesis Link (Optional)")
-
-        if st.form_submit_button("💾 Save & Generate Link"):
-            if final_author and thanks_text:
+        # Main Data Fields
+        author = st.text_input("Name", value=a_pre)
+        title = st.text_input("Thesis Title", value=t_pre)
+        thanks = st.text_area("Acknowledgments", height=250)
+        link = st.text_input("Thesis Link (Optional)")
+        
+        if st.form_submit_button("🚀 Create Shareable Link"):
+            if author and thanks:
                 df = get_data()
-                new_idx = len(df)
-                new_row = pd.DataFrame([{"author": final_author, "title": final_title, "content": thanks_text, "reference_url": thesis_url}])
+                new_id = len(df)
+                new_row = pd.DataFrame([{"author": author, "title": title, "content": thanks, "reference_url": link}])
                 conn.update(data=pd.concat([df, new_row], ignore_index=True))
                 
-                st.success("Tribute Saved!")
-                st.code(f"{BASE_URL}?id={new_idx}")
+                st.success("Tribute Created!")
+                st.write("Share this link with the people you thanked:")
+                st.code(f"{BASE_URL}?id={new_id}")
                 st.balloons()
-            else: st.warning("Author and Content are required.")
+            else:
+                st.error("Name and Acknowledgments are required.")
 
 with tabs[1]:
     df = get_data()
     if not df.empty:
-        for i, row in df.iterrows():
-            with st.expander(f"🎓 {row['author']} - {str(row['title'])[:40]}..."):
+        for i, row in df.iloc[::-1].iterrows():
+            with st.expander(f"🎓 {row['author']} — {str(row['title'])[:50]}..."):
                 st.write(row['content'])
-                st.markdown(f"[View Page]({BASE_URL}?id={i})")
+                st.markdown(f"[View Full Page]({BASE_URL}?id={i})")
