@@ -8,24 +8,18 @@ import re
 st.set_page_config(page_title="Thesis Thanks", page_icon="🎓", layout="centered")
 BASE_URL = "https://thesis-thanks.streamlit.app/"
 
-# Academic Theme CSS
 st.markdown("""
     <style>
     .stApp { background-color: #FFFFFF !important; }
     h1, h2, h3, p, span, div { color: #1A1A1A !important; }
     .intro-text { 
-        font-size: 1.15rem; 
-        color: #333333 !important; 
-        line-height: 1.7; 
-        background-color: #f9f9f9;
-        padding: 20px;
-        border-radius: 8px;
-        border-left: 4px solid #0e1117;
+        font-size: 1.15rem; color: #333333 !important; line-height: 1.7; 
+        background-color: #f9f9f9; padding: 20px; border-radius: 8px; border-left: 4px solid #0e1117;
     }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. HELPERS & DATABASE ---
+# --- 2. HELPERS ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_data():
@@ -47,9 +41,9 @@ def get_doi_metadata(doi):
 def parse_citation(citation):
     author = re.search(r'^([^,(]+)', citation)
     title = re.search(r'[“"‘\'](.+?)[”"’\']|(?<=\d\)\.\s)(.+?)(?=\.)', citation)
-    return (author.group(0).strip() if author else "Unknown"), (title.group(0).strip(" .\"'") if title else "Unknown")
+    return (author.group(0).strip() if author else ""), (title.group(0).strip(" .\"'") if title else "")
 
-# --- 3. ROUTER (The Shareable Tribute Link) ---
+# --- 3. ROUTER ---
 query_params = st.query_params
 if "id" in query_params:
     entry_id = query_params["id"]
@@ -68,14 +62,11 @@ if "id" in query_params:
             st.query_params.clear()
             st.rerun()
         st.stop()
-    except:
-        st.error("Tribute not found.")
-        st.stop()
+    except: st.error("Tribute not found."); st.stop()
 
 # --- 4. LANDING PAGE ---
 st.title("🎓 Thesis Thanks")
 
-# THE UPDATED INTRO TEXT
 st.markdown("""
 <div class="intro-text">
 You’ve done the hard work. You’ve finished the research, survived the write-up, and dedicated a page (or two) to the people who carried you through. But unless they’re planning to hunt down your library deposit, they’ll likely never see it.
@@ -86,40 +77,54 @@ You’ve done the hard work. You’ve finished the research, survived the write-
 
 st.divider()
 
+# Initialize session state for persistent fields
+if 'author' not in st.session_state: st.session_state.author = ""
+if 'title' not in st.session_state: st.session_state.title = ""
+
 tabs = st.tabs(["✍️ Create Tribute", "🖼️ Gallery"])
 
 with tabs[0]:
     mode = st.radio("Input Method", ["Manual", "DOI Lookup", "Citation Parser"], horizontal=True)
     
-    # Using columns for better form layout
-    with st.form("tribute_form"):
-        a_pre, t_pre = "", ""
-        
-        if mode == "DOI Lookup":
-            doi_in = st.text_input("DOI")
-            if st.form_submit_button("🔍 Fetch"):
-                a_pre, t_pre = get_doi_metadata(doi_in)
-        
-        elif mode == "Citation Parser":
-            cite_in = st.text_area("Paste Citation")
-            if st.form_submit_button("🛠️ Parse"):
-                a_pre, t_pre = parse_citation(cite_in)
+    # Logic for DOI/Citation runs OUTSIDE the main form to update session state
+    if mode == "DOI Lookup":
+        doi_in = st.text_input("Enter DOI")
+        if st.button("🔍 Fetch DOI Data"):
+            a, t = get_doi_metadata(doi_in)
+            if a:
+                st.session_state.author, st.session_state.title = a, t
+                st.success("Data fetched!")
+            else: st.error("DOI not found.")
 
-        # Main Data Fields
-        author = st.text_input("Name", value=a_pre)
-        title = st.text_input("Thesis Title", value=t_pre)
+    elif mode == "Citation Parser":
+        cite_in = st.text_area("Paste Citation")
+        if st.button("🛠️ Parse Citation"):
+            a, t = parse_citation(cite_in)
+            st.session_state.author, st.session_state.title = a, t
+            st.success("Citation parsed!")
+
+    # The Final Submission Form
+    with st.form("tribute_form", clear_on_submit=True):
+        # We use the session state as the default value
+        final_author = st.text_input("Name", value=st.session_state.author)
+        final_title = st.text_input("Thesis Title", value=st.session_state.title)
         thanks = st.text_area("Acknowledgments", height=250)
         link = st.text_input("Thesis Link (Optional)")
         
-        if st.form_submit_button("🚀 Create Shareable Link"):
-            if author and thanks:
+        submit_clicked = st.form_submit_button("🚀 Create Shareable Link")
+        
+        if submit_clicked:
+            if final_author and thanks:
                 df = get_data()
                 new_id = len(df)
-                new_row = pd.DataFrame([{"author": author, "title": title, "content": thanks, "reference_url": link}])
+                new_row = pd.DataFrame([{"author": final_author, "title": final_title, "content": thanks, "reference_url": link}])
                 conn.update(data=pd.concat([df, new_row], ignore_index=True))
                 
+                # Reset state after successful submit
+                st.session_state.author = ""
+                st.session_state.title = ""
+                
                 st.success("Tribute Created!")
-                st.write("Share this link with the people you thanked:")
                 st.code(f"{BASE_URL}?id={new_id}")
                 st.balloons()
             else:
